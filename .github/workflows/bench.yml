@@ -34,6 +34,22 @@ jobs:
           mkdir -p results
           python scripts/bench_scan.py
 
+          echo "---- bench_scan.json ----"
+          cat results/bench_scan.json
+
+          python - <<'PY'
+          import json, os
+          p = "results/bench_scan.json"
+          d = json.load(open(p))
+          line = f"MH/s={d['mhps']:.3f}  trials={d['trials']}  sec={d['seconds']:.3f}  py={d.get('python','?')}"
+          print("BENCH:", line)
+          summary = os.environ.get("GITHUB_STEP_SUMMARY")
+          if summary:
+              with open(summary, "a") as f:
+                  f.write("## VIREON Bench Summary\n")
+                  f.write(f"- {line}\n")
+          PY
+
       - name: Upload results
         uses: actions/upload-artifact@v4
         with:
