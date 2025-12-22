@@ -20,3 +20,16 @@ pytest -q
 python scripts/machine_info.py
 pytest -q --benchmark-only --benchmark-json results/bench.json benches/
 python scripts/build_evidence_pack.py
+
+
+Smoke
+vireon-miner --echo
+vireon-miner --selftest
+
+Evidence
+See:
+	•	BENCHMARKS.md
+	•	EVIDENCE.md
+	•	results/ artifact attached to the Bench workflow run
+
+
