@@ -18,8 +18,7 @@ def _sha256d(b: bytes) -> bytes:
 
 
 def _meets_target(hash32: bytes, target_int: int) -> bool:
-    # Bitcoin compares the hash interpreted as a big-endian integer to the target.
-    return int.from_bytes(hash32, "big") <= target_int
+    return int.from_bytes(hash32[::-1], "big") <= target_int
 
 
 def find_share_bounded(header76: bytes, target_int: int, start_nonce: int, count: int) -> Optional[ShareResult]:
