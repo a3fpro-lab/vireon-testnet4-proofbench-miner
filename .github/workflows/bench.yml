@@ -1,5 +1,7 @@
-name: Bench
-
+      - name: Run bench
+        run: |
+          mkdir -p results
+          python scripts/bench_scan.py
 on:
   workflow_dispatch:
   push:
