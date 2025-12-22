@@ -1,30 +1,32 @@
 from __future__ import annotations
 
+import json
 import socket
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Dict, Optional, Tuple
 
-from .protocol import parse_subscribe_reply, is_method, SubscribeInfo
-from .job import StratumJob
-from .scan import find_share_bounded
-from .stratum import StratumMsg, parse_json_line
+from .protocol import SubscribeInfo, parse_subscribe_reply, is_method
 
 
-class StratumProtocolError(RuntimeError):
-    pass
+def _send_json_line(sock: socket.socket, obj: Dict[str, Any]) -> None:
+    sock.sendall((json.dumps(obj) + "\n").encode())
+
+
+def _recv_json_line(sock: socket.socket) -> Dict[str, Any]:
+    buf = b""
+    while b"\n" not in buf:
+        chunk = sock.recv(4096)
+        if not chunk:
+            raise ConnectionError("socket closed")
+        buf += chunk
+    line, _ = buf.split(b"\n", 1)
+    return json.loads(line.decode())
 
 
 @dataclass(frozen=True)
 class HandshakeResult:
-    subscribe_reply: dict[str, Any]
-    authorize_reply: dict[str, Any]
-
-
-def _read_json_line(f) -> dict[str, Any]:
-    line = f.readline()
-    if not line:
-        raise StratumProtocolError("EOF from stratum server")
-    return parse_json_line(line)
+    subscribe: SubscribeInfo
+    authorized: bool
 
 
 def connect_and_handshake(
@@ -32,136 +34,59 @@ def connect_and_handshake(
     port: int,
     username: str,
     password: str,
-    *,
-    timeout_s: float = 10.0,
-    agent: str = "vireon/0.1",
+    timeout: float = 5.0,
 ) -> HandshakeResult:
     """
-    Minimal Stratum v1 handshake (plaintext TCP):
-    - send mining.subscribe (id=1)
-    - send mining.authorize (id=2)
-    - read until we receive matching id replies (server may interleave notifications)
+    Minimal Stratum v1 handshake:
+      mining.subscribe -> parse extranonce
+      mining.authorize -> bool
     """
-    with socket.create_connection((host, port), timeout=timeout_s) as s:
-        s.settimeout(timeout_s)
-        f = s.makefile("rwb")
+    with socket.create_connection((host, port), timeout=timeout) as sock:
+        sock.settimeout(timeout)
 
-        f.write(StratumMsg("mining.subscribe", [agent], msg_id=1).to_json_line())
-        f.write(StratumMsg("mining.authorize", [username, password], msg_id=2).to_json_line())
-        f.flush()
+        _send_json_line(sock, {"id": 1, "method": "mining.subscribe", "params": ["vireon/0.1"]})
+        sub_reply = _recv_json_line(sock)
+        sub_info = parse_subscribe_reply(sub_reply)
 
-        sub = None
-        auth = None
+        _send_json_line(sock, {"id": 2, "method": "mining.authorize", "params": [username, password]})
+        auth_reply = _recv_json_line(sock)
 
-        while sub is None or auth is None:
-            msg = _read_json_line(f)
-            mid = msg.get("id", None)
-            if mid == 1:
-                sub = msg
-            elif mid == 2:
-                auth = msg
-            else:
-                # ignore async notifications during handshake
-                continue
+        if auth_reply.get("error"):
+            raise ValueError(f"authorize error: {auth_reply['error']}")
+        authorized = bool(auth_reply.get("result") is True)
 
-        return HandshakeResult(subscribe_reply=sub, authorize_reply=auth)
+        return HandshakeResult(subscribe=sub_info, authorized=authorized)
 
 
-def run_live(
-    host: str,
-    port: int,
-    username: str,
-    password: str,
-    *,
-    timeout_s: float = 10.0,
-    agent: str = "vireon/0.1",
-    nonce_start: int = 0,
-    nonce_count: int = 100_000,
-    max_shares: int = 1,
-) -> int:
-    """
-    Live miner loop (SAFE defaults):
-    - max_shares defaults to 1
-    - bounded nonce scan per job
-    - plaintext Stratum only (TLS later)
+def parse_set_difficulty(msg: Dict[str, Any]) -> Optional[float]:
+    if not is_method(msg, "mining.set_difficulty"):
+        return None
+    params = msg.get("params")
+    if not isinstance(params, list) or not params:
+        return None
+    try:
+        return float(params[0])
+    except Exception:
+        return None
 
-    Returns exit code.
-    """
-    with socket.create_connection((host, port), timeout=timeout_s) as s:
-        s.settimeout(timeout_s)
-        f = s.makefile("rwb")
 
-        # subscribe + authorize
-        f.write(StratumMsg("mining.subscribe", [agent], msg_id=1).to_json_line())
-        f.write(StratumMsg("mining.authorize", [username, password], msg_id=2).to_json_line())
-        f.flush()
+def parse_notify(msg: Dict[str, Any]) -> Optional[Tuple[str, str, str, str, str, str, str, bool]]:
+    if not is_method(msg, "mining.notify"):
+        return None
+    p = msg.get("params")
+    if not isinstance(p, list) or len(p) < 9:
+        return None
 
-        # read until we have subscribe+authorize replies
-        sub_reply = None
-        auth_reply = None
-        while sub_reply is None or auth_reply is None:
-            msg = _read_json_line(f)
-            if msg.get("id") == 1:
-                sub_reply = msg
-            elif msg.get("id") == 2:
-                auth_reply = msg
+    job_id = p[0]
+    prevhash = p[1]
+    coinb1 = p[2]
+    coinb2 = p[3]
+    version = p[5]
+    nbits = p[6]
+    ntime = p[7]
+    clean = bool(p[8])
 
-        if auth_reply.get("result") is not True:
-            raise StratumProtocolError(f"authorize failed: {auth_reply}")
+    if not all(isinstance(x, str) for x in [job_id, prevhash, coinb1, coinb2, version, nbits, ntime]):
+        return None
 
-        sub_info: SubscribeInfo = parse_subscribe_reply(sub_reply)
-
-        difficulty = 1.0
-        shares_found = 0
-        submit_id = 4
-        extranonce2_counter = 0
-
-        while shares_found < max_shares:
-            msg = _read_json_line(f)
-
-            # Difficulty updates
-            if is_method(msg, "mining.set_difficulty"):
-                params = msg["params"]
-                if not params:
-                    continue
-                difficulty = float(params[0])
-                continue
-
-            # New job
-            if is_method(msg, "mining.notify"):
-                job = StratumJob.from_notify_params(msg["params"])
-
-                share, submit = find_share_bounded(
-                    job,
-                    username=username,
-                    extranonce1_hex=sub_info.extranonce1_hex,
-                    extranonce2_size=sub_info.extranonce2_size,
-                    difficulty=difficulty,
-                    extranonce2_counter=extranonce2_counter,
-                    nonce_start=nonce_start,
-                    nonce_count=nonce_count,
-                )
-                extranonce2_counter += 1
-
-                if share is None or submit is None:
-                    continue
-
-                # send submit
-                submit = StratumMsg(submit.method, submit.params, msg_id=submit_id)
-                f.write(submit.to_json_line())
-                f.flush()
-
-                # wait for submit reply
-                while True:
-                    r = _read_json_line(f)
-                    if r.get("id") == submit_id:
-                        if r.get("result") is True:
-                            shares_found += 1
-                        else:
-                            raise StratumProtocolError(f"submit rejected: {r}")
-                        break
-
-                submit_id += 1
-                continue
-
-        return 0
+    return (job_id, prevhash, coinb1, coinb2, version, nbits, ntime, clean)
