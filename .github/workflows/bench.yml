@@ -1,7 +1,5 @@
-      name: Run bench
-        run: |
-          mkdir -p results
-          python scripts/bench_scan.py
+name: Bench
+
 on:
   workflow_dispatch:
   push:
@@ -32,11 +30,9 @@ jobs:
 
       - name: Run bench
         run: |
+          set -euxo pipefail
           mkdir -p results
-          # If you have a bench script, use it. Otherwise this is a placeholder.
-          # Replace with YOUR real bench entrypoint:
-          python -c "import sys; print('bench placeholder ok'); sys.exit(0)"
-          echo "ok" > results/bench.txt
+          python scripts/bench_scan.py
 
       - name: Upload results
         uses: actions/upload-artifact@v4
