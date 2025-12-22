@@ -1,4 +1,4 @@
-      - name: Run bench
+      name: Run bench
         run: |
           mkdir -p results
           python scripts/bench_scan.py
