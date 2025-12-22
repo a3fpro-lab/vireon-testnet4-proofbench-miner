@@ -1,0 +1,7 @@
+cff-version: 1.2.0
+title: "Vireon Testnet4 ProofBench Miner"
+message: "If you use this miner or its benchmark/evidence protocol, please cite it."
+type: software
+authors:
+  - name: "Inkwon Song Jr"
+license: MIT
