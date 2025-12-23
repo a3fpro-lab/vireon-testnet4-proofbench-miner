@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import time
+from pathlib import Path
+import hashlib
 import json
 import socket
 from dataclasses import dataclass
@@ -18,6 +21,11 @@ class JsonLineReader:
         self.sock = sock
         self.buf = b""
 
+def _write_metrics(out_path: str, payload: dict) -> None:
+    Path(out_path).parent.mkdir(parents=True, exist_ok=True)
+    with open(out_path, "w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=2, sort_keys=True)
+    
     def read_one(self) -> Dict[str, Any]:
         while b"\n" not in self.buf:
             chunk = self.sock.recv(4096)
