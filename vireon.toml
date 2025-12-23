@@ -1,0 +1,15 @@
+[pool]
+host = "stratum.braiins.com"
+port = 3334
+tls = false
+
+[account]
+username = "inkonesong"
+password = "x"
+
+[runtime]
+batch_nonces = 200000
+suggest_difficulty = 1.0
+stale_seconds = 120
+timeout = 10.0
+log_every_seconds = 5.0
